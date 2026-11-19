@@ -1,0 +1,23 @@
+{
+  "captured_at": "2026-11-19T07:22:45",
+  "label": "before_fix",
+  "actor": "viewer",
+  "role": "只读",
+  "endpoint": "POST /api/catchup/物流源",
+  "http_status": 200,
+  "response": {
+    "ok": true,
+    "output_mode": "可写"
+  },
+  "row_delta": {
+    "users": 0,
+    "sources": 0,
+    "arrivals": 0,
+    "catchups": 1
+  },
+  "output_mode_before": "可写",
+  "output_mode_after": "可写",
+  "viewer_write_observed": true,
+  "before_db": "viewer_catchup_before_fix_before.db",
+  "after_db": "viewer_catchup_before_fix_after.db"
+}

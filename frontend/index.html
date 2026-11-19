@@ -17,12 +17,15 @@
   .src span{font-size:12px;color:#9db0cc}
   .mode{margin-top:8px;display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;background:#1d3b66}
   .mode.bad{background:#5b1d1d}.mode.warn{background:#5b4012}.mode.ok{background:#134e3a}
+  .dirbox{margin-top:16px;border-top:1px solid #274872;padding-top:14px}
+  .dirbox h4{margin:0 0 8px;font-size:13px;color:#9db0cc;font-weight:500}
+  .dirbox input{width:100%;margin:0 0 8px;border-radius:8px;border:1px solid #274872;background:#0d1c31;color:#e7eefc;padding:8px}
   main{padding:20px}
   .bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
   .seg{display:inline-flex;background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden}
   .seg button{border:0;background:transparent;padding:9px 12px;cursor:pointer}
   .seg button.on{background:var(--blue);color:#fff}
-  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
+  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
   .card h3{margin:0;font-size:12px;color:#64748b;font-weight:500}
   .card strong{display:block;font-family:"Segoe UI",system-ui,sans-serif;font-size:28px;margin-top:6px}
@@ -30,12 +33,18 @@
   th,td{padding:9px 6px;border-bottom:1px solid var(--line);text-align:left}
   input,select{width:100%;border:1px solid var(--line);border-radius:10px;padding:9px 10px;margin:5px 0 10px}
   .primary{background:var(--blue);color:#fff;border:0;border-radius:10px;padding:10px 12px;cursor:pointer}
+  .primary[disabled],.ghost[disabled]{opacity:.45;cursor:not-allowed}
   .ghost{background:#fff;border:1px solid #334155;color:#334155;border-radius:8px;padding:6px 8px;cursor:pointer}
   .login{max-width:420px;margin:12vh auto;background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px}
-  .err{color:var(--bad);min-height:18px}
+  .err{color:var(--bad);min-height:18px;font-size:13px}
+  .hint{color:#64748b;font-size:12px;margin-top:6px}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:#e2e8f0;color:#334155}
+  .pill.no{background:#fee2e2;color:#991b1b}.pill.yes{background:#d1fae5;color:#065f46}
   .timeline{border-left:2px solid #cbd5e1;margin-left:8px;padding-left:14px}
   .timeline .item{margin-bottom:12px;position:relative}
   .timeline .item:before{content:"";position:absolute;left:-19px;top:6px;width:8px;height:8px;border-radius:50%;background:var(--blue)}
+  .grid2{display:grid;grid-template-columns:1.2fr 1fr;gap:14px}
+  @media (max-width:1100px){.grid2{grid-template-columns:1fr}.cards{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
 <body>
@@ -58,17 +67,24 @@ createApp({
     const token=ref(localStorage.getItem('lagboard_token')||'');
     const user=ref(localStorage.getItem('lagboard_user')||'');
     const username=ref('admin'), password=ref('123456'), err=ref(''), tab=ref(0), actionErr=ref('');
-    const sources=ref([]), arrivals=ref([]), catchups=ref([]);
+    const sources=ref([]), arrivals=ref([]), catchups=ref([]), queue=ref([]), audit=ref([]);
+    const perms=ref({role:'',scheme:'A',write_capabilities:{}}), watermark=ref('0'), cutover=ref({});
     const form=ref({source:'订单源', source_clock:'2026-11-16T10:00:00', ingest_clock:'2026-11-16T10:40:00'});
-    const nav=['到达登记','滞后分级','补齐恢复'];
+    const newSource=ref({name:'',sla_minutes:20});
+    const newSeat=ref('viewer');
+    const watermarkInput=ref('0');
+    const nav=['到达登记','滞后分级','时限台补采'];
     const frozen=computed(()=>sources.value.filter(s=>s.output_mode==='冻结').length);
     const degraded=computed(()=>sources.value.filter(s=>s.output_mode==='降级只读').length);
+    const canWrite=computed(()=>perms.value.role==='管理员');
+    const deniedHint=computed(()=>canWrite.value?'':'只读账号：服务端拒写，写入请求会被拦下并记越权审计');
     function modeClass(m){return m==='冻结'?'bad':(m==='降级只读'?'warn':'ok');}
     function auth(){return {Authorization:'Bearer '+token.value,'Content-Type':'application/json'};}
+    function reasonOf(j,fallback){return (j&&j.reason)||(j&&typeof j.detail==='string'?j.detail:'')||fallback;}
     async function login(){
       err.value='';
       const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username.value,password:password.value})});
-      const j=await r.json(); if(!r.ok){err.value=j.detail||'登录失败';return;}
+      const j=await r.json(); if(!r.ok){err.value=reasonOf(j,'登录失败');return;}
       token.value=j.token; user.value=j.username;
       localStorage.setItem('lagboard_token',j.token); localStorage.setItem('lagboard_user',j.username);
       await refresh();
@@ -82,23 +98,45 @@ createApp({
     }
     async function refresh(){
       if(!token.value) return;
+      const p=await loadJson('/api/permissions'); if(p===null) return;
+      perms.value=p;
       const s=await loadJson('/api/sources'); if(s===null) return;
       sources.value=Array.isArray(s.items)?s.items:[];
       const a=await loadJson('/api/arrivals'); if(a===null) return;
       arrivals.value=Array.isArray(a.items)?a.items:[];
       const c=await loadJson('/api/catchups'); if(c===null) return;
       catchups.value=Array.isArray(c.items)?c.items:[];
+      const q=await loadJson('/api/catchup-queue'); if(q===null) return;
+      queue.value=Array.isArray(q.items)?q.items:[];
+      const w=await loadJson('/api/watermark'); if(w===null) return;
+      watermark.value=w.value; watermarkInput.value=w.value;
+      const au=await loadJson('/api/escalation/audit'); if(au===null) return;
+      audit.value=Array.isArray(au.items)?au.items:[];
+      const co=await loadJson('/api/escalation/cutover'); if(co===null) return;
+      cutover.value=co.cutover||{};
       if(sources.value.length && !form.value.source) form.value.source=sources.value[0].name;
     }
-    async function recordArrival(){
+    async function send(url, method, body){
       actionErr.value='';
-      const r=await fetch('/api/arrivals',{method:'POST',headers:auth(),body:JSON.stringify(form.value)});
-      const j=await r.json(); actionErr.value=r.ok?(`滞后 ${j.lag_minutes} 分 · ${j.level} · ${j.output_mode}`):(j.detail||'失败');
+      const r=await fetch(url,{method,headers:auth(),body:body===undefined?undefined:JSON.stringify(body)});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok){ actionErr.value=reasonOf(j,'请求失败'); }
       await refresh();
+      return {ok:r.ok,j};
     }
-    async function doCatchup(name){await fetch('/api/catchup/'+encodeURIComponent(name),{method:'POST',headers:auth()});await refresh();}
+    async function recordArrival(){
+      const r=await send('/api/arrivals','POST',form.value);
+      if(r.ok) actionErr.value=`滞后 ${r.j.lag_minutes} 分 · ${r.j.level} · ${r.j.output_mode}`;
+    }
+    async function doCatchup(name){ const r=await send('/api/catchup/'+encodeURIComponent(name),'POST'); if(r.ok) actionErr.value=`${name} 已补齐恢复`; }
+    async function addSource(){ const r=await send('/api/sources','POST',{...newSource.value,output_mode:'可写'}); if(r.ok){newSource.value={name:'',sla_minutes:20};} }
+    async function enqueueSeat(){ const r=await send('/api/catchup-queue','POST',{source:form.value.source,seat:newSeat.value}); if(r.ok) actionErr.value='已入补采席队列'; }
+    async function saveWatermark(){ const r=await send('/api/watermark','POST',{value:String(watermarkInput.value)}); if(r.ok) actionErr.value='水位卡片已更新'; }
+    async function ackAudit(){ const r=await send('/api/escalation/audit/ack','POST',{}); if(r.ok) actionErr.value='越权审计已确认'; }
     onMounted(()=>{if(token.value)refresh();});
-    return {token,user,username,password,err,tab,nav,sources,arrivals,catchups,form,actionErr,frozen,degraded,modeClass,login,logout,recordArrival,doCatchup};
+    return {token,user,username,password,err,tab,nav,sources,arrivals,catchups,queue,audit,perms,watermark,cutover,
+      form,newSource,newSeat,watermarkInput,actionErr,frozen,degraded,canWrite,deniedHint,modeClass,reasonOf,
+      login,logout,recordArrival,doCatchup,addSource,enqueueSeat,saveWatermark,ackAudit};
   },
   template:`
   <div v-if="!token" class="login">
@@ -106,27 +144,40 @@ createApp({
     <p style="color:#64748b">多源到达时钟对照 SLA，超限冻结或降级，补齐后恢复。</p>
     <label>用户名</label><input v-model="username"/><label>密码</label><input type="password" v-model="password"/>
     <div class="err">{{err}}</div><button class="primary" style="width:100%" @click="login">打开监控面</button>
+    <p class="hint">只读账号 viewer / view123 可查看；写入一律由服务端拦下。</p>
   </div>
   <div v-if="token" class="wrap">
     <aside>
       <h1>源到达SLA</h1>
-      <p>左侧是各源当前输出态；右侧登记到达并做补齐恢复。</p>
+      <p>左侧是各源输出态与源目录牌；右侧登记到达，在时限台补采页补齐恢复。</p>
       <div class="src" v-for="s in sources" :key="s.id">
         <b>{{s.name}}</b>
         <span>SLA {{s.sla_minutes}} 分钟</span>
         <div class="mode" :class="modeClass(s.output_mode)">{{s.output_mode}}</div>
       </div>
-      <div style="margin-top:18px;font-size:12px;color:#9db0cc">{{user}} · <a href="#" style="color:#fff" @click.prevent="logout">退出</a></div>
+      <div class="dirbox">
+        <h4>源目录牌</h4>
+        <input v-model="newSource.name" placeholder="新源名称"/>
+        <input v-model.number="newSource.sla_minutes" type="number" placeholder="SLA 分钟"/>
+        <button class="ghost" @click="addSource">登记源</button>
+        <div class="hint" style="color:#9db0cc" v-if="!canWrite">只读：服务端拒写</div>
+      </div>
+      <div style="margin-top:18px;font-size:12px;color:#9db0cc">
+        {{user}} · {{perms.role}} · 切断方案 {{perms.scheme}} · <a href="#" style="color:#fff" @click.prevent="logout">退出</a>
+      </div>
     </aside>
     <main>
       <div class="bar">
         <div class="seg"><button v-for="(n,i) in nav" :key="n" :class="{on:tab===i}" @click="tab=i">{{n}}</button></div>
+        <span class="pill" :class="canWrite?'yes':'no'">{{canWrite?'管理员·可写':'只读·拒写'}}</span>
       </div>
       <div class="cards">
         <div class="card"><h3>源数量</h3><strong>{{sources.length}}</strong></div>
         <div class="card"><h3>冻结中</h3><strong>{{frozen}}</strong></div>
         <div class="card"><h3>降级只读</h3><strong>{{degraded}}</strong></div>
+        <div class="card"><h3>水位卡片</h3><strong>{{watermark}}</strong></div>
       </div>
+
       <div class="card" v-show="tab===0">
         <h3 style="margin-bottom:8px">登记到达</h3>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
@@ -135,6 +186,7 @@ createApp({
           <div><label>摄入时钟</label><input v-model="form.ingest_clock"/></div>
         </div>
         <button class="primary" @click="recordArrival">计算滞后并更新输出态</button>
+        <div class="hint" v-if="!canWrite">{{deniedHint}}</div>
         <div class="err">{{actionErr}}</div>
         <div class="timeline" style="margin-top:16px">
           <div class="item" v-for="a in (arrivals||[]).slice(0,8)" :key="a.id">
@@ -143,17 +195,65 @@ createApp({
           </div>
         </div>
       </div>
+
       <div class="card" v-show="tab===1">
-        <h3>分级规则</h3>
-        <p style="color:#64748b;font-size:13px">≤SLA 正常可写；≤2×SLA 告警降级只读；更久违约冻结。</p>
-        <table><thead><tr><th>源</th><th>SLA</th><th>输出态</th><th></th></tr></thead>
-        <tbody><tr v-for="s in sources" :key="'g'+s.id">
-          <td>{{s.name}}</td><td>{{s.sla_minutes}}</td><td>{{s.output_mode}}</td>
+        <div class="grid2">
+          <div>
+            <h3>分级规则</h3>
+            <p style="color:#64748b;font-size:13px">≤SLA 正常可写；≤2×SLA 告警降级只读；更久违约冻结。</p>
+            <table><thead><tr><th>源</th><th>SLA</th><th>输出态</th></tr></thead>
+            <tbody><tr v-for="s in sources" :key="'g'+s.id">
+              <td>{{s.name}}</td><td>{{s.sla_minutes}}</td><td>{{s.output_mode}}</td>
+            </tr></tbody></table>
+          </div>
+          <div>
+            <h3>权限矩阵 / 角色附页</h3>
+            <p style="color:#64748b;font-size:13px">当前角色：<b>{{perms.role}}</b>；切断方案 {{perms.scheme}}（甲：服务端拦下只读补齐，正式零写入）。</p>
+            <table><thead><tr><th>写面</th><th>本角色</th></tr></thead>
+            <tbody><tr v-for="(v,k) in perms.write_capabilities" :key="k">
+              <td>{{k}}</td><td><span class="pill" :class="v?'yes':'no'">{{v?'可写':'拒写'}}</span></td>
+            </tr></tbody></table>
+            <p class="hint">按钮置灰只是提示；真正切断在服务端，只读请求一律拒写并记越权审计。</p>
+            <h3 style="margin-top:14px">水位卡片</h3>
+            <input v-model="watermarkInput"/>
+            <button class="ghost" @click="saveWatermark">更新水位</button>
+            <div class="hint" v-if="!canWrite">{{deniedHint}}</div>
+          </div>
+        </div>
+        <div class="err">{{actionErr}}</div>
+      </div>
+
+      <div class="card" v-show="tab===2">
+        <h3>时限台补采页 · 补齐恢复</h3>
+        <table><thead><tr><th>源</th><th>当前输出态</th><th>补齐</th></tr></thead>
+        <tbody><tr v-for="s in sources" :key="'c'+s.id">
+          <td>{{s.name}}</td><td>{{s.output_mode}}</td>
           <td><button class="ghost" @click="doCatchup(s.name)">补齐恢复</button></td>
         </tr></tbody></table>
-      </div>
-      <div class="card" v-show="tab===2">
-        <h3>补齐记录</h3>
+        <div class="hint" v-if="!canWrite">{{deniedHint}}</div>
+        <div class="err">{{actionErr}}</div>
+
+        <div class="grid2" style="margin-top:14px">
+          <div>
+            <h3>补采席队列</h3>
+            <div style="display:flex;gap:8px;align-items:flex-start">
+              <select v-model="newSeat" style="max-width:160px"><option value="viewer">只读席</option><option value="admin">值班席</option></select>
+              <button class="ghost" @click="enqueueSeat">加入 {{form.source}} 补采</button>
+            </div>
+            <div class="hint" v-if="!canWrite">{{deniedHint}}</div>
+            <table><thead><tr><th>源</th><th>席位</th><th>状态</th><th>时间</th></tr></thead>
+            <tbody><tr v-for="q in queue" :key="q.id"><td>{{q.source}}</td><td>{{q.seat}}</td><td>{{q.status}}</td><td>{{q.created_at}}</td></tr></tbody></table>
+          </div>
+          <div>
+            <h3>越权审计列表</h3>
+            <p class="hint">审计落越权专卷；读取对两角色开放，写入仅管理员。</p>
+            <table><thead><tr><th>时间</th><th>账号</th><th>动作</th><th>原因</th></tr></thead>
+            <tbody><tr v-for="r in audit.slice(0,10)" :key="r.id"><td>{{r.at}}</td><td>{{r.actor}}</td><td>{{r.action}}</td><td>{{r.reason}}</td></tr></tbody></table>
+            <button class="ghost" @click="ackAudit">确认已读</button>
+          </div>
+        </div>
+
+        <h3 style="margin-top:14px">补齐记录</h3>
         <table><thead><tr><th>源</th><th>状态</th><th>恢复为</th><th>时间</th></tr></thead>
         <tbody><tr v-for="x in catchups" :key="x.id"><td>{{x.source}}</td><td>{{x.status}}</td><td>{{x.restored_mode}}</td><td>{{x.created_at}}</td></tr></tbody></table>
       </div>

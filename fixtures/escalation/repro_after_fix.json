@@ -1,0 +1,23 @@
+{
+  "captured_at": "2026-11-19T07:22:36",
+  "label": "after_fix",
+  "actor": "viewer",
+  "role": "只读",
+  "endpoint": "POST /api/catchup/物流源",
+  "http_status": 403,
+  "response": {
+    "reason": "只读越权补齐",
+    "escalation": true
+  },
+  "row_delta": {
+    "users": 0,
+    "sources": 0,
+    "arrivals": 0,
+    "catchups": 0
+  },
+  "output_mode_before": "冻结",
+  "output_mode_after": "冻结",
+  "viewer_write_observed": false,
+  "before_db": "viewer_catchup_after_fix_before.db",
+  "after_db": "viewer_catchup_after_fix_after.db"
+}
